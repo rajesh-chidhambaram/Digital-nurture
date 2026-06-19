@@ -1,2 +1,2 @@
 ﻿# Digital-nurture
-Python & SQL exercises
+ Upskill & Deep skilling exercises 
