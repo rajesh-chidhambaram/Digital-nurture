@@ -1,4 +1,29 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual Environments
 venv/
+env/
+
+# Environment Variables
 .env
+.env.local
+
+# ORM/Alembic
+**/alembic/versions/__pycache__/
+orm/__pycache__/
+orm/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
