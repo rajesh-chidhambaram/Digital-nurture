@@ -1,18 +1,19 @@
 from flask import Flask
 from config import Config
+from extensions import db, migrate
 
 
 def create_app():
     app = Flask(__name__)
 
-    # Load configuration
     app.config.from_object(Config)
 
-    # Register Blueprints
+    db.init_app(app)
+    migrate.init_app(app, db)
+
     from courses.routes import courses_bp
     app.register_blueprint(courses_bp)
 
-    # Global Error Handler
     @app.errorhandler(404)
     def not_found(error):
         return {
