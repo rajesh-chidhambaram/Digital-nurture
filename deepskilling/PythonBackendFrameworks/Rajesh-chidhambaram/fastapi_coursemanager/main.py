@@ -1,14 +1,17 @@
 from typing import Optional
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
+    Request,
     Response,
     status,
-    BackgroundTasks,
 )
-from sqlalchemy import select
+from fastapi.responses import JSONResponse
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Base, engine, get_db
@@ -36,6 +39,24 @@ app = FastAPI(
     }
 )
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": "NOT_FOUND"
+                if exc.status_code == 404
+                else "ERROR",
+
+                "message": exc.detail,
+
+                "field": None
+            }
+        }
+    )
+
 
 @app.on_event("startup")
 async def startup():
@@ -51,32 +72,32 @@ async def root():
 
 
 @app.post(
-    "/api/courses/",
-    tags=["Courses"],
+    "/api/v1/courses/",
     response_model=CourseResponse,
-    summary="Create a new course",
     status_code=status.HTTP_201_CREATED,
+    tags=["Courses"],
+    summary="Create a new course",
+    response_description="The newly created course"
 )
 async def create_course(
     course: CourseCreate,
-    db: AsyncSession = Depends(get_db),
+    response: Response,
+    db: AsyncSession = Depends(get_db)
 ):
     new_course = Course(
         name=course.name,
         code=course.code,
         credits=course.credits,
-        department_id=course.department_id,
+        department_id=course.department_id
     )
-
     db.add(new_course)
     await db.commit()
     await db.refresh(new_course)
-
+    response.headers["Location"] = f"/api/v1/courses/{new_course.id}"
     return new_course
 
-
 @app.get(
-    "/api/courses/",
+    "/api/v1/courses/",
     tags=["Courses"],
     response_model=list[CourseResponse],
     summary="Retrieve a list of courses",
@@ -101,32 +122,69 @@ async def get_courses(
 
 
 @app.get(
-    "/api/courses/{course_id}",
+    "/api/v1/courses/",
     tags=["Courses"],
-    response_model=CourseResponse,
-    summary="Retrieve a specific course by ID"
+    summary="Retrieve all courses"
 )
-async def get_course(
-    course_id: int,
-    db: AsyncSession = Depends(get_db),
+async def get_courses(
+    request: Request,
+    page: int = 1,
+    page_size: int = 10,
+    department_id: Optional[int] = None,
+    search: Optional[str] = None, 
+    db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(
-        select(Course).where(Course.id == course_id)
-    )
+    stmt = select(Course)
 
-    course = result.scalar_one_or_none()
-
-    if course is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found",
+    if department_id is not None:
+        stmt = stmt.where(
+            Course.department_id == department_id
         )
 
-    return course
+    if search:
+        stmt = stmt.where(
+            or_(
+                Course.name.ilike(f"%{search}%"),
+                Course.code.ilike(f"%{search}%")
+            )
+        )
+
+    total = await db.scalar(
+        select(func.count()).select_from(stmt.subquery())
+    )
+
+    offset = (page - 1) * page_size
+    stmt = stmt.offset(offset).limit(page_size)
+    result = await db.execute(stmt)
+    courses = result.scalars().all()
+    next_url = None
+    previous_url = None
+    if offset + page_size < total:
+        next_url = str(
+            request.url.include_query_params(
+                page=page + 1,
+                page_size=page_size
+            )
+        )
+
+    if page > 1:
+        previous_url = str(
+            request.url.include_query_params(
+                page=page - 1,
+                page_size=page_size
+            )
+        )
+
+    return {
+        "count": total,
+        "next": next_url,
+        "previous": previous_url,
+        "results": courses
+    }
 
 
 @app.put(
-    "/api/courses/{course_id}",
+    "/api/v1/courses/{course_id}",
     response_model=CourseResponse,
     tags=["Courses"],
     summary="Update a specific course by ID"
@@ -166,8 +224,42 @@ async def update_course(
     return db_course
 
 
+@app.patch(
+    "/api/v1/courses/{course_id}",
+    response_model=CourseResponse,
+    tags=["Courses"],
+    summary="Partially update a course"
+)
+async def patch_course(
+    course_id: int,
+    course: CourseUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Course).where(Course.id == course_id)
+    )
+
+    db_course = result.scalar_one_or_none()
+
+    if db_course is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course not found"
+        )
+
+    updates = course.model_dump(exclude_unset=True)
+
+    for field, value in updates.items():
+        setattr(db_course, field, value)
+
+    await db.commit()
+    await db.refresh(db_course)
+
+    return db_course
+
+
 @app.delete(
-    "/api/courses/{course_id}",
+    "/api/v1/courses/{course_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["Courses"],
     summary="Delete a specific course by ID"
@@ -195,7 +287,7 @@ async def delete_course(
 
 
 @app.post(
-    "/api/students/",
+    "/api/v1/students/",
     response_model=StudentResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["Students"],
@@ -203,6 +295,7 @@ async def delete_course(
 )
 async def create_student(
     student: StudentCreate,
+    response: Response,
     db: AsyncSession = Depends(get_db)
 ):
 
@@ -210,18 +303,15 @@ async def create_student(
         name=student.name,
         email=student.email
     )
-
     db.add(new_student)
-
     await db.commit()
-
     await db.refresh(new_student)
-
+    response.headers["Location"] = f"/api/v1/students/{new_student.id}"
     return new_student
 
 
 @app.get(
-    "/api/students/",
+    "/api/v1/students/",
     tags=["Students"],
     response_model=list[StudentResponse],
     summary="Retrieve a list of students"
@@ -238,7 +328,7 @@ async def get_students(
 
 
 @app.post(
-    "/api/enrollments/",
+    "/api/v1/enrollments/",
     tags=["Enrollments"],
     response_model=EnrollmentResponse,
     status_code=status.HTTP_201_CREATED,
@@ -269,11 +359,11 @@ async def create_enrollment(
         send_confirmation_email,
         student.email
     )
-
+    response.headers["Location"] = f"/api/v1/enrollments/{new_enrollment.id}"
     return new_enrollment
 
 @app.get(
-    "/api/enrollments/",
+    "/api/v1/enrollments/",
     tags=["Enrollments"],
     response_model=list[EnrollmentResponse],
     summary="Retrieve a list of enrollments"
@@ -290,7 +380,7 @@ async def get_enrollments(
 
 
 @app.get(
-        "/api/courses/{course_id}/students/", 
+        "/api/v1/courses/{course_id}/students/", 
         tags=["Courses"], 
         summary="Retrieve students enrolled in a specific course"
         )
